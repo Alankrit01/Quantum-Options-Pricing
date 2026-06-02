@@ -1,0 +1,8 @@
+numpy
+scipy
+matplotlib
+plotly
+qiskit
+qiskit-finance
+yfinance
+pandas
