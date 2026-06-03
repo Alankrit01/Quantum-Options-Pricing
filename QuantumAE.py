@@ -3,6 +3,16 @@ Quantum Amplitude Estimation Engine
 
 This engine implements QAE for European option pricing using classical simulation of quantum circuits. 
 Circuits are simulated via statevector or shot-based methods using numpy and scipy
+
+3 QAE Algorithms to run:
+
+1. Classical QAE -  QPE based QAE (deep circuits with many qubits). Simulated using exact amplitude formula.
+                    Used as a theoretical baseline because it is not practical on real hardware
+
+2. Iterative QAE - Shallow circuits with O(1/epsilon) query complexity. Practical for near future hardware (Main algo)
+
+3. Maximum Likelihood QAE - Runs fixed depth circuits at multiple schedule points and optimises the likelihood.
+                            Balances depth and accuracy
 """
 import numpy as np
 from dataclasses import dataclass
@@ -129,5 +139,18 @@ class LogNormalStatePrep:
     def optionPrice_fromAmplitude(self, amplitude: float) -> float:
         return float(amplitude * self.payoff_scale)
         
-        
-        
+# -------------------------------------------------------------------------------------------------  
+# Depolarising noise model
+
+def appy_noise(amplitude:float, n_oracle:int, noise_p:float) -> float:
+    """
+    Approximate depolarising noise effect on amplitude estimate.
+    
+    After M oracle calls with per-call error rate p, the amplitude is damped toward 0.5 (the fully mixed state):
+ 
+        a_noisy = (1 - 2p)^M * a_ideal + (1 - (1-2p)^M) * 0.5
+    """
+    if noise_p <= 0:
+        return amplitude
+    decay = (1.0 - 2.0*noise_p) ** n_oracle
+    return float(decay * amplitude + (1.0 - decay) * 0.5)
