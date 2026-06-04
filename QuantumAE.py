@@ -366,3 +366,138 @@ def iterativeQAE(
     )
     result._history = history   # attach convergence trace for debugging/plotting
     return result
+
+# -------------------------------------------------------------------------------------------------  
+# Maximum Likelihood QAE 
+def mlQAE(
+    params: SharedParameters,
+    schedule: Optional[List[int]] = None,  # list of Grover repetition counts
+    n_shots_each: int = 100,   # shots per schedule depth
+    n_qubits: int = 5,
+    option_type: str = "call",
+    q: float = 0.0,
+    noise_p: float = 0.0,
+    seed:int = 42,
+) -> QAEResult:
+    """
+    IQAE adaptively picks the next depth based on the current CI. MLQAE uses a fixed schedule of depths decided upfront, 
+    runs all of them in parallel, then combines the shot counts via maximum likelihood.
+    
+    Why MLQAE over IQAE:
+        - No adaptive loop: all circuits can run in parallel on hardware
+        - Cleaner statistical framework: MLE with Cramer-Rao CI bounds
+        - More robust: no risk of CI collapse from bad round choices
+    
+    Why MLQAE over Classical QAE:
+        - No deep QPE circuits (no QFT needed)
+        - Each schedule point is a short, independent circuit
+    
+    MLE:
+    For each schedule point m_k (Grover depth 2*m_k+1), we observe n_ones out of n_shots. 
+    The measurement probability is a known function of theta:
+        p(theta, m_k) = sin^2((2*m_k+1)*theta)  [for even m_k]
+        
+    The joint log-likelihood across all schedule points is:
+        LL(theta) = sum_k [ n_ones_k * log(p_k) + (n_shots - n_ones_k) * log(1-p_k) ]
+        
+    We find theta_mle = argmax LL(theta) using scipy's bounded scalar minimiser.
+
+    Args:
+        params (SharedParameters): _description_
+        schedule (Optional[List[int]], optional): _description_. Defaults to None.
+        option_type (str, optional): _description_. Defaults to "call".
+        q (float, optional): _description_. Defaults to 0.0.
+        noise_p (float, optional): _description_. Defaults to 0.0.
+        seed (int, optional): _description_. Defaults to 42.
+    """
+    prep = LogNormalStatePrep(params, n_qubits, q)
+    a_true = prep.true_amplitude(option_type)
+    rng = np.random.default_rng(seed)
+    
+    # Default schedule: geometrically increasing depths(2^n) covers wide range of amplification levels with few circuits. 
+    # Deeper schedules give more precision at the cost of circuit depth.
+    if schedule is None:
+        schedule = [0,1,2,4,8,16,32]
+    shot_data = []      # list of (m_k, n_shots, n_ones) tuples
+    total_oracle = 0
+    max_depth = 1
+    
+    for m_k in schedule:
+        depth = 2 * m_k + 1         # actual Grover layers for this schedule point
+        max_depth = max(max_depth, depth)
+        total_oracle += n_shots_each * depth
+        
+        # apply noise at current depth level
+        a_noisy = appy_noise(a_true, depth, noise_p)
+        theta_n = np.arcsin(np.sqrt(np.clip(a_noisy, 0.0, 1.0)))
+        
+        # Measurement prob at current depth 
+        if m_k%2 == 0:
+            p_meas = np.sin(depth * theta_n) ** 2
+        else:
+            p_meas = np.cos(depth * theta_n) ** 2
+        p_meas = float(np.clip(p_meas, 1e-10, 1.0 - 1e-10))     # Avoid log(0)
+        
+        # Simulate hardware measurement (binomial draw)
+        n_ones = int(rng.binomial(n_shots_each, p_meas))
+        shot_data.append(m_k, n_shots_each, n_ones)
+        
+    # Maximum Likelihood Optimisation
+    # Build the negative log-likelihood function over theta in (0, pi/2)
+    def negative_log_likelihood(theta: float) -> float:
+        if theta <= 0 or theta >= np.pi / 2:
+            return 1e12     # large penalty if outside range
+        ll = 0.0
+        for m_k, n_total, n_ones in shot_data:
+            depth = 2 * m_k + 1
+            # Measreuemnt prob at this theta value
+            p = np.sin(depth * theta)**2 if m_k%2==0 else np.cos(depth*theta)**2
+            p = np.clip(p, 1e-10, 1.0 - 1e-10)
+            # Standard binomial log-likelihood contribution
+            ll += n_ones * np.log(p) + (n_total - n_ones) * np.log(1.0 - p)
+        return -ll   # minimise negative = maximise likelihood
+    
+    # scipy's bounded Brent method: finds the global minimum on (0, pi/2)
+    opt = minimize_scalar(
+        negative_log_likelihood,
+        bounds=(1e-6, np.pi / 2.0 - 1e-6),
+        method='bounded',
+        options={'xatol': 1e-8},    # stop when theta changes by less than 1e-8
+    )
+    theta_mle = opt.x
+    a_est = float(np.sin(theta_mle)**2)     # MLE Amplitude estimate
+    
+    # Crammer-Rao confidence Interval
+    # The Fisher information I(theta) = -d^2 LL/dtheta^2 tells us how sharply the likelihood peaks at theta_mle. 
+    # By the Cramer-Rao bound, the MLE variance is >= 1/I(theta_mle), with equality asymptotically.
+    # We compute I numerically via finite differences on the negative log-likelihood.
+    
+    dth = 1e-5
+    fi = max(1e-12,
+              (negative_log_likelihood(theta_mle - dth)
+               - 2 * negative_log_likelihood(theta_mle)
+               + negative_log_likelihood(theta_mle + dth)) / dth**2)
+    # fi estimates the curvature; 1/sqrt(fi) is the MLE standard error on theta
+    theta_stderr = 1.0 / np.sqrt(fi)
+    
+    # propogate theta uncertainity to price uncertainity
+    a_stderr = abs(2 * np.sin(theta_mle) * np.cos(theta_mle)) * theta_stderr
+ 
+    # Scale amplitude uncertainty to price uncertainty
+    price_est = prep.optionPrice_fromAmplitude(a_est)
+    price_stderr = prep.payoff_scale*a_stderr
+    z95 = 1.959964
+    
+    return QAEResult(
+        price         = price_est,
+        amplitude     = float(a_est),
+        stderr        = price_stderr,
+        ci_low        = price_est - z95 * price_stderr,
+        ci_high       = price_est + z95 * price_stderr,
+        n_oracle      = int(total_oracle),
+        n_qubits      = n_qubits,
+        method        = "MLQAE",
+        noise_level   = noise_p,
+        circuit_depth = int(max_depth),
+    )
+    
