@@ -501,3 +501,124 @@ def mlQAE(
         circuit_depth = int(max_depth),
     )
     
+# -------------------------------------------------------------------------------------------------  
+# Convergence study -> how error decreases as epsilon shrinks (oracle budget grows)
+def qaeConvergence(
+    params: SharedParameters,
+    epsilon_values: np.ndarray,   # e.g. [0.1, 0.05, 0.02, 0.01, 0.005]
+    bs_price_ref: float,        # ground truth to measure error against
+    algorithm: str = "iqae",
+    n_qubits: int = 5,
+    option_type: str = "call",
+    q: float = 0.0,
+    noise_p: float = 0.0,
+    n_repeats: int = 10,   # independent runs per epsilon for error bars
+) -> dict:
+    """
+    Run IQAE or MLQAE at decreasing epsilon values and record:
+        Mean |errpr| vs BS reference
+        std of error across repeats 
+        mean stderr from algorithm
+        mean oracle count (x-axis for convergence plot)
+        
+    The output format matches that of MonteCarlo with a key comparison being 
+        MC shows O(1/sqrtN) slope vs O(1/N) for QAE
+    """
+    mean_errors = []
+    std_error = []
+    mean_stderrs = []
+    oracle_counts = []
+    
+    for eps in epsilon_values:
+        errors = []
+        stderrs = []
+        oracles = []
+        
+        for rep in range(n_repeats):
+            try:
+                if algorithm == "iqae":
+                    res = iterativeQAE(
+                        params, epsilon=float(eps), n_qubits=n_qubits, option_type=option_type, q=q, noise_p=noise_p, 
+                        seed=42 + rep*997,
+                    )
+                else:
+                    # For MLQAE derive a sensible schedule from epsilon
+                    max_m = max(1, int(np.ceil(np.pi/(4.0*float(eps)))))
+                    sched = [0] + [2**i for i in range(int(np.log2(max_m + 1)) +1)]
+                    res = mlQAE(
+                        params, schedule=sched, n_shots_each=max(50,int(1.0/float(eps))), n_qubits=n_qubits, 
+                        option_type=option_type, q=q, noise_p=noise_p, seed=42 + rep*997,
+                    )
+                errors.append(abs(res.price - bs_price_ref))
+                stderrs.append(res.stderr)
+                oracles.append(res.n_oracle)
+            except Exception as e:
+                warnings.warn(f"QAE failed at eps={eps:.4f} rep={rep}: {e}")
+                
+        if errors:
+            mean_errors.append(float(np.mean(errors)))
+            std_error.append(float(np.std(errors)))
+            mean_stderrs.append(float(np.mean(stderrs)))
+            oracle_counts.append(float(np.mean(oracles)))
+    
+    n = len(mean_errors)
+    return {
+        'epsilon_values': np.array(epsilon_values[:n]),
+        'n_oracle'      : np.array(oracle_counts),    # x-axis: oracle budget used
+        'mean_error'    : np.array(mean_errors),      # y-axis: accuracy achieved
+        'std_error'     : np.array(std_error),       # error bar width
+        'mean_stderr'   : np.array(mean_stderrs),
+        'method_name'   : algorithm.upper(),
+        'noise_p'       : noise_p,
+    }
+    
+# -------------------------------------------------------------------------------------------------  
+# Noise impact study -> at what noise level does QAE lose its advantage
+def noise_impact_study(
+    params: SharedParameters,
+    noise_levels: np.ndarray,   # e.g. np.linspace(0, 0.05, 20)
+    epsilon: float = 0.01,
+    n_qubits: int = 5,
+    option_type: str = "call",
+    q: float = 0.0,
+    n_repeats: int = 10,
+) -> dict:
+    """
+    Run IQAE at increasing depolaring noise levels with fixed epsilon.
+    
+    QAE uses deep Grover circuits. Each gate adds noise and at some noise_p, error from noise exceeds what plain MC would give
+    with same oracle budget. Beyond this threshold, Monte Carlo is better.
+
+    Typically, QAE holds advantage upto noise_p = 10^-3 to 10^-4 per gate for realistic circuit depths
+    """
+    bs_ref = bs_price(params, option_type=option_type, q=q)
+    mean_errors = []
+    std_errors = []
+    mean_prices = []
+    
+    for p_noise in noise_levels:
+        errors = []
+        prices = []
+        for rep in range(n_repeats):
+            try:
+                res = iterativeQAE(
+                    params, epsilon=epsilon, n_qubits=n_qubits, option_type=option_type, q=q, noise_p=float(p_noise),
+                    seed = 42 + rep*997,
+                )
+                errors.append(abs(res.price - bs_ref))
+                prices.append(res.price)
+            except Exception:
+                pass
+        if errors:
+            mean_errors.append(float(np.mean(errors)))
+            std_errors.append(float.np.std(errors))
+            mean_prices.append(float(np.mean(prices)))
+            
+    n = len(mean_errors)
+    return {
+        'noise_levels': np.array(noise_levels[:n]),
+        'mean_error'  : np.array(mean_errors),
+        'std_error'   : np.array(std_errors),
+        'mean_price'  : np.array(mean_prices),
+        'bs_ref'      : bs_ref,   # reference line for the plot
+    }
