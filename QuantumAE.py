@@ -13,6 +13,32 @@ Circuits are simulated via statevector or shot-based methods using numpy and sci
 
 3. Maximum Likelihood QAE - Runs fixed depth circuits at multiple schedule points and optimises the likelihood.
                             Balances depth and accuracy
+                            
+Usage for unit test - python QuantumAE.py
+Ouput: BS reference : 8.021352
+
+Discretisation error vs qubit count:
+  qubits   points    disc_price    error $   error%
+       3        8     10.687400   2.666048  33.237%
+       4       16      7.487350   0.534002   6.657%
+       5       32      7.873546   0.147807   1.843%
+       6       64      8.048935   0.027583   0.344%
+       7      128      8.014634   0.006718   0.084%
+       8      256      8.023160   0.001808   0.023%
+
+Method                      Price     |Error|     Oracle    Depth
+─────────────────────────────────────────────────────────────────
+Classical QAE             8.201738    0.180386        256     256  (0.00s)
+IQAE                      0.018706    8.002647    226,000     157  (0.00s)
+MLQAE                    88.536121   80.514769     13,300     65  (0.00s)
+
+Noise impact on IQAE (epsilon=0.01):
+   noise_p       price     |error|
+    0.0000    0.026550    7.994802
+    0.0010    0.094960    7.926392
+    0.0050    0.022923    7.998429
+    0.0100    0.049254    7.972098
+    0.0500    2.718269    5.303084
 """
 import numpy as np
 from dataclasses import dataclass
@@ -259,7 +285,7 @@ def iterativeQAE(
         max_iter (int, optional): _description_. Defaults to 50.
         seed (int, optional): _description_. Defaults to 42.
     """
-    prep = LogNormalStatePrep
+    prep = LogNormalStatePrep(params, n_qubits, q)
     a_true = prep.true_amplitude(option_type)
     rng = np.random.default_rng(seed)
     
@@ -280,7 +306,7 @@ def iterativeQAE(
         width = theta_hi - theta_lo
         
         # Stopping criteria: CI is already narrow
-        if width < 2/0 * epsilon:
+        if width < 2.0 * epsilon:
             break
         
         # Depth selection: pick k so that 2k+1 Grover layers fit within the CI
@@ -333,7 +359,7 @@ def iterativeQAE(
         if theta_lo >= theta_hi:
             mid = (th_lo_c + th_hi_c) / 2.0
             theta_lo = max(0.0, mid - epsilon)
-            theta_hi = min(np.pi / 2, mid - epsilon)
+            theta_hi = min(np.pi / 2, mid + epsilon)
             
         history.append({
             'iter': x, 'k': k, 'depth': depth,
@@ -341,18 +367,18 @@ def iterativeQAE(
             'n_oracle_cumulative': total_oracle,
         })
         
-        # Final Estimate: midpoint of converged theta CI
-        theta_est = (theta_lo + theta_hi) / 2.0
-        a_est = float(np.sin(theta_est) ** 2)       # converting theta to amplitude
+    # Final Estimate: midpoint of converged theta CI
+    theta_est = (theta_lo + theta_hi) / 2.0
+    a_est = float(np.sin(theta_est) ** 2)       # converting theta to amplitude
         
-        # Convert amplitude interval to price interval
-        price_est = prep.optionPrice_fromAmplitude(a_est)
-        price_lo = prep.optionPrice_fromAmplitude(np.sin(theta_lo)**2)
-        price_hi = prep.optionPrice_fromAmplitude(np.sin(theta_hi)**2)
-        # Infer stderr from CI width
-        price_stderr = (price_hi - price_lo) / (2.0 * 1.959964)
+    # Convert amplitude interval to price interval
+    price_est = prep.optionPrice_fromAmplitude(a_est)
+    price_lo = prep.optionPrice_fromAmplitude(np.sin(theta_lo)**2)
+    price_hi = prep.optionPrice_fromAmplitude(np.sin(theta_hi)**2)
+    # Infer stderr from CI width
+    price_stderr = (price_hi - price_lo) / (2.0 * 1.959964)
         
-        result = QAEResult(
+    result = QAEResult(
         price         = price_est,
         amplitude     = a_est,
         stderr        = price_stderr,
@@ -440,7 +466,7 @@ def mlQAE(
         
         # Simulate hardware measurement (binomial draw)
         n_ones = int(rng.binomial(n_shots_each, p_meas))
-        shot_data.append(m_k, n_shots_each, n_ones)
+        shot_data.append((m_k, n_shots_each, n_ones))
         
     # Maximum Likelihood Optimisation
     # Build the negative log-likelihood function over theta in (0, pi/2)
@@ -611,7 +637,7 @@ def noise_impact_study(
                 pass
         if errors:
             mean_errors.append(float(np.mean(errors)))
-            std_errors.append(float.np.std(errors))
+            std_errors.append(float(np.std(errors)))
             mean_prices.append(float(np.mean(prices)))
             
     n = len(mean_errors)
@@ -622,3 +648,88 @@ def noise_impact_study(
         'mean_price'  : np.array(mean_prices),
         'bs_ref'      : bs_ref,   # reference line for the plot
     }
+
+# -------------------------------------------------------------------------------------------------  
+# Discretisation Quality Check -> how many qubits are needed to accurately capture the distribution
+def discretisation_report(
+    params: SharedParameters,
+    n_qubits: int = 5,
+    q: float = 0.0,
+    option_type: str = "call",
+) -> dict:
+    """
+    Quantify the error introduced by using a finite qubit grid vs the continuous log-normal distribution that BS prices exactly.
+    
+    Trade Off:
+        n=3  qubits: 8 price bins, large discretisation error, tiny circuits
+        n=5  qubits: 32 price bins, moderate error, manageable circuits
+        n=8  qubits: 256 price bins, small error, deep circuits
+        n=10 qubits: 1024 bins, very accurate, but circuit size grows exponentially
+
+    Typical rule of thumb: use enough qubits so disc_error < epsilon/10.
+    Args:
+        params (SharedParameters): _description_
+        n_qubits (int, optional): _description_. Defaults to 5.
+        q (float, optional): _description_. Defaults to 0.0.
+        option_type (str, optional): _description_. Defaults to "call".
+    """
+    prep = LogNormalStatePrep(params, n_qubits, q)
+    a_true = prep.true_amplitude(option_type)
+    disc_price = prep.optionPrice_fromAmplitude(a_true)         # Price from discretised grid
+    bs_ref = bs_price(params, option_type, q)                   # Continous black scholes ref.
+    
+    return {
+        'n_qubits'          : n_qubits,
+        'n_points'          : prep.N,                              # 2^n_qubits
+        'bs_price'          : bs_ref,
+        'discretised_price' : disc_price,
+        'disc_error'        : abs(disc_price - bs_ref),            # absolute $ error
+        'disc_error_pct'    : abs(disc_price - bs_ref) / bs_ref * 100,  # % error
+        'true_amplitude'    : a_true,
+        'payoff_scale'      : prep.payoff_scale,
+    }
+    
+# -------------------------------------------------------------------------------------------------  
+# File Testing
+
+if __name__ == "__main__":
+    import time
+ 
+    # Standard test: $100 stock, $105 strike, 5% rate, 20% vol, 1 year
+    # BS call price should be ~8.02 (matches MonteCarlo.py test case)
+    p      = SharedParameters(S=100, K=105, r=0.05, sigma=0.2, T=1.0)
+    bs_ref = bs_price(p, "call")
+    print(f"BS reference : {bs_ref:.6f}\n")
+ 
+    # STEP 1: Check discretisation error for increasing qubit counts
+    # More qubits = better accuracy but deeper quantum circuits
+    print("Discretisation error vs qubit count:")
+    print(f"  {'qubits':>6}  {'points':>7}  {'disc_price':>12}  {'error $':>9}  {'error%':>7}")
+    for nq in [3, 4, 5, 6, 7, 8]:
+        rep = discretisation_report(p, nq)
+        print(f"  {nq:>6}  {rep['n_points']:>7}  {rep['discretised_price']:>12.6f}"
+              f"  {rep['disc_error']:>9.6f}  {rep['disc_error_pct']:>6.3f}%")
+ 
+    # STEP 2: Compare all three QAE algorithms on the same test
+    print()
+    tests = [
+        ("Classical QAE", lambda: classicalQAE(p, n_qubits=5, m_eval=8)),
+        ("IQAE",          lambda: iterativeQAE(p, epsilon=0.005, n_qubits=5)),
+        ("MLQAE",         lambda: mlQAE(p, n_qubits=5)),
+    ]
+    print(f"{'Method':<22}  {'Price':>10}  {'|Error|':>10}  {'Oracle':>9}  {'Depth':>7}")
+    print("─" * 65)
+    for name, fn in tests:
+        t0  = time.perf_counter()
+        res = fn()
+        dt  = time.perf_counter() - t0
+        print(f"{name:<22}  {res.price:>10.6f}  {abs(res.price-bs_ref):>10.6f}"
+              f"  {res.n_oracle:>9,}  {res.circuit_depth:>7}  ({dt:.2f}s)")
+ 
+    # STEP 3: Show noise sensitivity — how does error grow as hardware gets noisier?
+    # noise_p=0.0 is ideal; noise_p=0.05 is very noisy (current NISQ hardware)
+    print("\nNoise impact on IQAE (epsilon=0.01):")
+    print(f"  {'noise_p':>8}  {'price':>10}  {'|error|':>10}")
+    for np_val in [0.0, 0.001, 0.005, 0.01, 0.05]:
+        res = iterativeQAE(p, epsilon=0.01, noise_p=np_val)
+        print(f"  {np_val:>8.4f}  {res.price:>10.6f}  {abs(res.price-bs_ref):>10.6f}")
