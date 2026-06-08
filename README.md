@@ -48,3 +48,40 @@ The IV-skew causes systematic overpricing of deep ITM calls by upto $2.40 which 
 ### BlackScholes Implied Terminal Price
 
 The market expects MSFT to be trading in the range of $383-$550 range by 2026-07-10 with 90% confidence. This range suggests elevated uncertainity is priced in. The estimated stock price at expiry is $462.60 
+
+
+
+## Monte Carlo Engine
+Run 4 MonteCarlo methods and compares results with BlackScholes "true answer". 
+
+Every MC method gives the PriceEstimate, StdErr(Uncertainity in estimate), |Error|(actual distance from BS truth), CI_Width(95% confidence interval) and Time taken to run the simulation. 
+
+Plain Monte Carlo - Baseline  
+Antithetic MC - For every random path Z, it also runs -Z(mirror path). This halves the stderr and nearly halves CI width.  
+Control Variate MC - uses known expectation of S_T as correction anchor. More statistically sophisticated.  
+Quasi MC - instead of random numbers it uses a deterministic low-discrepancy sequence that fills the probability space more evenly. QuasiMC is the winner for Option pricing. 
+
+## Monte Carlo Analysis
+
+Price Erorr vs Black Scholes:  
+    QuasiMC - flat at $0.00 error across the entire strike range (essentially replicating BS analytically).  
+    PlainMC and AntitheticMC - show errors peaking around ATM where gamma is highest.  
+    High gamma = High path sensitivity = noisier MC estimates  
+    Control Variate MC is better than PlainMC but cant match QuasiMC
+
+Standard Error vs Strike: plain MC has highest stderr ($0.18) at low strikes for calls shrinking as strikes rise (OTM options have smaller payoffs so less variance). Antithetic and Control Variate MC halve it. QuasiMC id inconsistently noisy in stderr terms (**stderr is a misleading metric for QuasiMC since it is not truly random**).
+
+## Monte Carlo Convergence Study
+
+Error vs N(log-log):  
+    PlainMC, Antithetic and Control Variate all follow the O(1/√N) slope -> error halves each time you quadruple paths.  
+    QuasiMC diverges completely -> follows roughly O(1/N) or better at high N, converging faster.  
+        By N = 200,000 at ~10^-5 error while others are at ~10^-1.
+
+Standard Error vs N:  
+    All methods reduce stderr predictably with N. Control variate consistently sits lowest among the random methods. 
+
+Variance Reduction Factor:  
+    Control Variate gives a stable ~2.2x reduction regardless of N (It is reliable and predictable)  
+    Antithetic gives a stable ~1.9x (slightly less but still consistent)  
+    QuasiMC oscilates wildly (1.0x - 1.4x). VRF is not a meaningful metric for Sobol Sequences. Its advantage is in actual error, not variance. 
