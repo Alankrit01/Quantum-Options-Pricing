@@ -1,6 +1,8 @@
 # Quantum-Options-Pricing
 Error Analysis and Benchmarking Computational Complexity across Black-Scholes, Monte Carlo and Quantum Amplitude Estimation engines for pricing different types of options
 
+The Black-Scholes model does not account for "early exercise" flexibility which means it is optimal only for European Options. Monte Carlo models simulate thousands of possible future price paths for an underlying asset using random sampling, so they can be used for pricing various types of options. QAE is a quantum computing algorithm that provides a quadratic speedup over classical Monte Carlo simulations for option pricing, so can also be used for pricing various types of options. 
+
 ## Background
 Call Option: Right to buy an asset at a predetermined price  
 Put Option: Right to sell an asset at a predetermined price  
@@ -37,6 +39,8 @@ It then produces visuals analysing price vs strike, price error, IV smile, delta
 
 ### BlackScholes Analysis
 
+![alt text](data/BlackScholes_Analysis.png)
+
 Price Vs Strike: BlackScholes and market mid track both track each other closesly for puts and calls. This means BlackScholes is a reasonable model for pricing MSFT at the current expiry. 
 
 BS Price Error: Calls show error of $0.5 - $2.40, all positive (i.e BS overpirces calls vs market). Puts show small negative errors near ATM.
@@ -62,6 +66,7 @@ Control Variate MC - uses known expectation of S_T as correction anchor. More st
 Quasi MC - instead of random numbers it uses a deterministic low-discrepancy sequence that fills the probability space more evenly. QuasiMC is the winner for Option pricing. 
 
 ## Monte Carlo Analysis
+![alt text](data/MonteCarlo_Analysis.png)
 
 Price Erorr vs Black Scholes:  
     QuasiMC - flat at $0.00 error across the entire strike range (essentially replicating BS analytically).  
@@ -72,6 +77,7 @@ Price Erorr vs Black Scholes:
 Standard Error vs Strike: plain MC has highest stderr ($0.18) at low strikes for calls shrinking as strikes rise (OTM options have smaller payoffs so less variance). Antithetic and Control Variate MC halve it. QuasiMC id inconsistently noisy in stderr terms (**stderr is a misleading metric for QuasiMC since it is not truly random**).
 
 ## Monte Carlo Convergence Study
+![alt text](data/MonteCarlo_Convergence.png)
 
 Error vs N(log-log):  
     PlainMC, Antithetic and Control Variate all follow the O(1/√N) slope -> error halves each time you quadruple paths.  
@@ -85,3 +91,16 @@ Variance Reduction Factor:
     Control Variate gives a stable ~2.2x reduction regardless of N (It is reliable and predictable)  
     Antithetic gives a stable ~1.9x (slightly less but still consistent)  
     QuasiMC oscilates wildly (1.0x - 1.4x). VRF is not a meaningful metric for Sobol Sequences. Its advantage is in actual error, not variance. 
+
+
+
+## Quantum Amplitude Estimation (QAE)
+Encodes the entire stock price distribution into a quantum state and uses quantum amplitude amplification to extract the expected payoff with quadratically fewer "oracle calls" than MonteCarlo needs paths. It uses Grover-like amplitude amplification to extract E[payoff] directly, without sampling each path individually. Where MC needs N^2 paths to halve error, QAE needs only N oracle calls.
+
+Classical QAE: Uses Quantum Phase Extension(QPE) with m evaluation qubits. This is used as the theoretical baseline only because circuit depth grows as 2^m, which makes it impractical on current NISQ hardware as it cannot sustain coherence over deep circuits.  
+
+Iterative QAE: Replaced deep QPE circuit with an adaptive loop which achieves O(1/ε) oracle complexity with shallow circuits. This makes IQAE a practical engine for near term quantum hardware (NISQ friendly).
+
+Maximum Likelihood QAE: Uses fixed schedule of Grover depths [1,3,5,9,17,33,65]. Runs all circuits in parallel, collects shot counts and finds amplitude maximising join log-likelihood. It is simpler than IQAE, parallelisable and statistically cleaner. 
+
+Noise Model: Real quantum hardware introduces depolarising noise per gate. Each oracle call degrades amplitude with decay factor (1-2p)^M. The noise impact study identifies the crossover point beyond which MonteCarlo outperforms QAE (typically around noise_p ~ 10^-3 to 10^-4 per gate).
