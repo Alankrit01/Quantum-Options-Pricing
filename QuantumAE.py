@@ -30,15 +30,15 @@ Method                      Price     |Error|     Oracle    Depth
 ─────────────────────────────────────────────────────────────────
 Classical QAE             8.201738    0.180386        256     256  (0.00s)
 IQAE                      0.018706    8.002647    226,000     157  (0.00s)
-MLQAE                    88.536121   80.514769     13,300     65  (0.00s)
+MLQAE                     7.908471    0.112881     13,300      65  (0.97s)
 
 Noise impact on IQAE (epsilon=0.01):
    noise_p       price     |error|
-    0.0000    0.026550    7.994802
+    0.0000    0.101399    7.919954
     0.0010    0.094960    7.926392
-    0.0050    0.022923    7.998429
-    0.0100    0.049254    7.972098
-    0.0500    2.718269    5.303084
+    0.0050    0.033793    7.987560
+    0.0100    0.025081    7.996271
+    0.0500    5.970423    2.050929
 """
 import numpy as np
 from dataclasses import dataclass
@@ -312,8 +312,17 @@ def iterativeQAE(
         # Depth selection: pick k so that 2k+1 Grover layers fit within the CI
         # Intuition: the measurement probability oscillates with period ~1/depth in theta space. 
         # For useful signal, the period should be larger than the CI. 
-        k = max(0, int(np.floor(np.pi / (4.0 * width))))
-        k = min(k, 4096)
+        k_candidate = int(np.floor(np.pi / (4.0 * width)))
+        theta_mid = 0.5 * (theta_lo + theta_hi)
+        while k_candidate > 0:
+            depth = 2 * k_candidate + 1
+            # ensure interval does not wrap around
+            if depth * width < np.pi / 2:
+                break
+            k_candidate -= 1
+
+        k = max(0, k_candidate)
+        depth = 2 * k + 1
         depth = 2*k+1   # total Grover layers (always odd: k forward, then k back)
         max_depth = max(max_depth, depth)
         total_oracle += N_shots * depth     # each shot uses 'depth' oracle calls
@@ -326,10 +335,8 @@ def iterativeQAE(
         #   p = sin^2(depth * theta)  when k is even
         #   p = cos^2(depth * theta)  when k is odd
         # This oscillatory structure is what allows QAE to amplify precision
-        if k%2 == 0:
-            p_meas = np.sin(depth * theta_n) ** 2
-        else:
-            p_meas = np.cos(depth * theta_n) ** 2
+        # Grover amplification probability
+        p_meas = np.sin((2 * k + 1) * theta_n) ** 2
         p_meas = float(np.clip(p_meas, 0.0, 1.0))
         
         # Simulate shot counts: binomial draw
@@ -342,14 +349,8 @@ def iterativeQAE(
         p_lo = max(0.0, n_ones / N_shots-t)
         p_hi = min(1.0, n_ones / N_shots+t)
         
-        # Invert to get theta bounds from p bounds
-        if k%2 == 0:
-            th_lo_c = np.arcsin(np.sqrt(p_lo)) / depth      # lower theta from lower p
-            th_hi_c = np.arcsin(np.sqrt(p_hi)) / depth      # higher theta from higher p
-        else:
-            # cos^2 is decreasing: high p -> low theta, so bounds flip
-            th_lo_c = np.arccos(np.sqrt(p_hi)) / depth
-            th_hi_c = np.arccos(np.sqrt(p_lo)) / depth
+        th_lo_c = np.arcsin(np.sqrt(p_lo)) / depth
+        th_hi_c = np.arcsin(np.sqrt(p_hi)) / depth
             
         # intersect: new CI = old CI and this rounds CI
         theta_lo = max(theta_lo, th_lo_c)
@@ -458,10 +459,7 @@ def mlQAE(
         theta_n = np.arcsin(np.sqrt(np.clip(a_noisy, 0.0, 1.0)))
         
         # Measurement prob at current depth 
-        if m_k%2 == 0:
-            p_meas = np.sin(depth * theta_n) ** 2
-        else:
-            p_meas = np.cos(depth * theta_n) ** 2
+        p_meas = np.sin((2 * m_k + 1) * theta_n) ** 2
         p_meas = float(np.clip(p_meas, 1e-10, 1.0 - 1e-10))     # Avoid log(0)
         
         # Simulate hardware measurement (binomial draw)
@@ -477,20 +475,24 @@ def mlQAE(
         for m_k, n_total, n_ones in shot_data:
             depth = 2 * m_k + 1
             # Measreuemnt prob at this theta value
-            p = np.sin(depth * theta)**2 if m_k%2==0 else np.cos(depth*theta)**2
+            p = np.sin((2 * m_k + 1) * theta) ** 2
             p = np.clip(p, 1e-10, 1.0 - 1e-10)
             # Standard binomial log-likelihood contribution
             ll += n_ones * np.log(p) + (n_total - n_ones) * np.log(1.0 - p)
         return -ll   # minimise negative = maximise likelihood
     
-    # scipy's bounded Brent method: finds the global minimum on (0, pi/2)
-    opt = minimize_scalar(
-        negative_log_likelihood,
-        bounds=(1e-6, np.pi / 2.0 - 1e-6),
-        method='bounded',
-        options={'xatol': 1e-8},    # stop when theta changes by less than 1e-8
+    theta_grid = np.linspace(
+        1e-6,
+        np.pi/2.0 - 1e-6,
+        50000
     )
-    theta_mle = opt.x
+
+    ll_vals = np.array([
+        -negative_log_likelihood(th)
+        for th in theta_grid
+    ])
+
+    theta_mle = theta_grid[np.argmax(ll_vals)]
     a_est = float(np.sin(theta_mle)**2)     # MLE Amplitude estimate
     
     # Crammer-Rao confidence Interval
