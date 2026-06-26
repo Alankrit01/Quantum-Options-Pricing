@@ -15,7 +15,7 @@ Circuits are simulated via statevector or shot-based methods using numpy and sci
                             Balances depth and accuracy
                             
 Usage for unit test - python QuantumAE.py
-Ouput: BS reference : 8.021352
+BS reference : 8.021352
 
 Discretisation error vs qubit count:
   qubits   points    disc_price    error $   error%
@@ -26,18 +26,18 @@ Discretisation error vs qubit count:
        7      128      8.014634   0.006718   0.084%
        8      256      8.023160   0.001808   0.023%
 
-Method                      Price     |Error|     Oracle    Depth
+Method                       Price     |Error|     Oracle    Depth
 ─────────────────────────────────────────────────────────────────
-Classical QAE             8.201738    0.180386        256     256  (0.00s)
-IQAE                      0.018706    8.002647    226,000     157  (0.00s)
-MLQAE                     7.908471    0.112881     13,300      65  (0.97s)
+Classical QAE             8.201738    0.180386        256      256  (0.00s)
+IQAE                      8.092014    0.070662     67,000       61  (0.00s)
+MLQAE                     7.908471    0.112881     13,300       65  (1.67s)
 
 Noise impact on IQAE (epsilon=0.01):
    noise_p       price     |error|
-    0.0000    0.101399    7.919954
-    0.0010    0.094960    7.926392
-    0.0050    0.033793    7.987560
-    0.0100    0.025081    7.996271
+    0.0000    7.902312    0.119040
+    0.0010    8.305617    0.284264
+    0.0050   17.457358    9.436006
+    0.0100   16.106647    8.085295
     0.0500    5.970423    2.050929
 """
 import numpy as np
@@ -178,7 +178,8 @@ def appy_noise(amplitude:float, n_oracle:int, noise_p:float) -> float:
     """
     if noise_p <= 0:
         return amplitude
-    decay = (1.0 - 2.0*noise_p) ** n_oracle
+    decay = (1.0 - 2.0 * noise_p) ** n_oracle
+    decay = max(0.0, decay)   # clamp: decay can't go negative physically
     return float(decay * amplitude + (1.0 - decay) * 0.5)
 
 # -------------------------------------------------------------------------------------------------  
@@ -728,7 +729,7 @@ if __name__ == "__main__":
     print()
     tests = [
         ("Classical QAE", lambda: classicalQAE(p, n_qubits=5, m_eval=8)),
-        ("IQAE",          lambda: iterativeQAE(p, epsilon=0.005, n_qubits=5)),
+        ("IQAE",          lambda: iterativeQAE(p, epsilon=0.005, n_qubits=6)),
         ("MLQAE",         lambda: mlQAE(p, n_qubits=5)),
     ]
     print(f"{'Method':<22}  {'Price':>10}  {'|Error|':>10}  {'Oracle':>9}  {'Depth':>7}")
