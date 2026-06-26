@@ -336,31 +336,43 @@ def iterativeQAE(
         #   p = cos^2(depth * theta)  when k is odd
         # This oscillatory structure is what allows QAE to amplify precision
         # Grover amplification probability
-        p_meas = np.sin((2 * k + 1) * theta_n) ** 2
-        p_meas = float(np.clip(p_meas, 0.0, 1.0))
-        
-        # Simulate shot counts: binomial draw
+        p_meas = float(np.clip(np.sin(depth * theta_n) ** 2, 0.0, 1.0))
         n_ones = int(rng.binomial(N_shots, p_meas))
-        
-        # Chernoff-Hoeffding Bound: Classicial statistical CI on measured probability 
-        # t is half width of CI on p_meas given N_shots samples
-        # The log(2*max_iter/alpha) term is a union bound across all rounds
-        t = np.sqrt(np.log(2.0 * max_iter/alpha) / (2.0 * N_shots))
-        p_lo = max(0.0, n_ones / N_shots-t)
-        p_hi = min(1.0, n_ones / N_shots+t)
-        
-        th_lo_c = np.arcsin(np.sqrt(p_lo)) / depth
-        th_hi_c = np.arcsin(np.sqrt(p_hi)) / depth
-            
-        # intersect: new CI = old CI and this rounds CI
-        theta_lo = max(theta_lo, th_lo_c)
-        theta_hi = min(theta_hi, th_hi_c)
-        
-        # Numerical guard if intersection is empty
-        if theta_lo >= theta_hi:
-            mid = (th_lo_c + th_hi_c) / 2.0
-            theta_lo = max(0.0, mid - epsilon)
-            theta_hi = min(np.pi / 2, mid + epsilon)
+
+        t = np.sqrt(np.log(2.0 * max_iter / alpha) / (2.0 * N_shots))
+        p_lo = max(0.0, n_ones / N_shots - t)
+        p_hi = min(1.0, n_ones / N_shots + t)
+
+        phi_lo = np.arcsin(np.sqrt(p_lo))   # arcsin result in [0, π/2]
+        phi_hi = np.arcsin(np.sqrt(p_hi))
+
+        candidate_intervals = []
+        for j in range(depth + 1):
+            # Branch A: ascending part of sin²
+            a_lo = (phi_lo + j * np.pi) / depth
+            a_hi = (phi_hi + j * np.pi) / depth
+            if a_lo <= theta_hi and a_hi >= theta_lo:
+                candidate_intervals.append((
+                    max(a_lo, theta_lo),
+                    min(a_hi, theta_hi)
+                ))
+            # Branch B: descending part of sin²
+            b_lo = (np.pi - phi_hi + j * np.pi) / depth
+            b_hi = (np.pi - phi_lo + j * np.pi) / depth
+            if b_lo <= theta_hi and b_hi >= theta_lo:
+                candidate_intervals.append((
+                    max(b_lo, theta_lo),
+                    min(b_hi, theta_hi)
+                ))
+
+        # Pick the valid intersection with the smallest width (most informative)
+        valid = [(lo, hi) for lo, hi in candidate_intervals if hi > lo]
+        if valid:
+            best = min(valid, key=lambda iv: iv[1] - iv[0])
+            theta_lo, theta_hi = best
+        else:
+            # No branch intersects — fall back to keeping current CI
+            pass
             
         history.append({
             'iter': x, 'k': k, 'depth': depth,
