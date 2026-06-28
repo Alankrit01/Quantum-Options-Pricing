@@ -3,6 +3,8 @@ Error Analysis and Benchmarking Computational Complexity across Black-Scholes, M
 
 The Black-Scholes model does not account for "early exercise" flexibility which means it is optimal only for European Options. Monte Carlo models simulate thousands of possible future price paths for an underlying asset using random sampling, so they can be used for pricing various types of options. QAE is a quantum computing algorithm that provides a quadratic speedup over classical Monte Carlo simulations for option pricing, so can also be used for pricing various types of options. 
 
+This project gives 2 methods for pricing options accurately which can handle the limitations offered by the Black Scholes Model. Over the course of the project, out of a number of methods tested, Quasi-MonteCarlo (Sobol Sequences) and Quantum Amplitude Engine (IQAE+MLQAE) perform the best. 
+
 ## Background
 Call Option: Right to buy an asset at a predetermined price  
 Put Option: Right to sell an asset at a predetermined price  
@@ -104,3 +106,20 @@ Iterative QAE: Replaced deep QPE circuit with an adaptive loop which achieves O(
 Maximum Likelihood QAE: Uses fixed schedule of Grover depths [1,3,5,9,17,33,65]. Runs all circuits in parallel, collects shot counts and finds amplitude maximising join log-likelihood. It is simpler than IQAE, parallelisable and statistically cleaner. 
 
 Noise Model: Real quantum hardware introduces depolarising noise per gate. Each oracle call degrades amplitude with decay factor (1-2p)^M. The noise impact study identifies the crossover point beyond which MonteCarlo outperforms QAE (typically around noise_p ~ 10^-3 to 10^-4 per gate).
+
+## QAE Analysis
+Before running quantum circuits, the number of qubits required for log-normal grid to accurately represent stock price distribution must be established. Beyond 6 qubits the gains are negligible relative to the exponential increase in circuit depth. 6 qubits (64 grid points, 0.34% error) is the practical sweet spot for this option.
+
+In the single strike pricing table, IQAE and MLQAE are within 0.8 error compared to BlackScholes benchmark.
+
+![alt text](data/MSFT_2026-07-10_20260602_0214_threeway_convergence.png)
+
+The key comparison in the convergence study is the slope: MonteCarlo methods follow O(1/√N), meaning each 10x reduction in error requires 100x more paths. QAE follows O(1/ε), meaning 10x more precision requires only 10x more oracle calls. This quadratic speedup compounds rapidly at high precision targets. Comparing standard error vs evaluations, the quantum advantage can be seen as the Oracle calls increase. The break-even point where QAE begins to need fewer evaluations than plain MC sits at approximately 1200 oracle calls, corresponding to roughly ε = 0.06. Below that threshold classical MC is competitive; above it QAE's steeper convergence slope dominates.
+
+
+## Comparing QAE with BS and MC
+![alt text](data/MSFT_2026-07-10_20260602_0214_qae_full_dashboard.png)
+
+IQAE performs correctly for ATM and OTM options, which represent the majority of liquid trading activity. It struggles in deep ITM options. Small errors in the measured shot probabilities push the CI into a region with no valid intersection, causing the algorithm to either widen the interval or converge to the wrong branch. This is a known limitation of iterative amplitude estimation at high amplitude values and is not present in Classical QAE or MLQAE, which handle the full [0, π/2] range more robustly. 
+
+In order to effectively price deep ITM options, it is better to switch to MLQAE for strikes where amplitude estimate exceeds ~0.8. 
